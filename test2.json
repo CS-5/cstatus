@@ -1,0 +1,25 @@
+{
+  "hook_event_name": "Status",
+  "session_id": "xyz789",
+  "transcript_path": "/tmp/claude-session-xyz789/transcript.md",
+  "cwd": "/Users/test/projects/my-app",
+  "model": {
+    "id": "claude-3-haiku-20240307",
+    "display_name": "Claude 3 Haiku"
+  },
+  "workspace": {
+    "current_dir": "/Users/test/projects/my-app/src",
+    "project_dir": "/Users/test/projects/my-app"
+  },
+  "version": "0.9.5",
+  "output_style": {
+    "name": "light"
+  },
+  "cost": {
+    "total_cost_usd": 0.45,
+    "total_duration_ms": 15000,
+    "total_api_duration_ms": 3000,
+    "total_lines_added": 50,
+    "total_lines_removed": 10
+  }
+}
