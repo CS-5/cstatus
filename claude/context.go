@@ -19,7 +19,6 @@ func NewContextFromReader(r io.Reader) (*Context, error) {
 		return nil, fmt.Errorf("error reading input: %w", err)
 	}
 
-	// Handle empty input gracefully
 	if len(jsonData) == 0 {
 		return nil, fmt.Errorf("no input received")
 	}

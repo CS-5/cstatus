@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/CS-5/statusline/claude"
+	"github.com/CS-5/cstatus/claude"
 )
 
 type StatuslineBuilder struct {
