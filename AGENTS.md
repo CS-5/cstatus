@@ -1,28 +1,63 @@
-# AGENTS.md
+# CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
 
-statusline is a high-performance, extensible statusline formatter for Claude Code CLI that displays model info, git branch, token usage, and other contextual metrics. The application is designed with extreme performance, ease of development, and maintainability as core priorities.
+cstatus is a high-performance, extensible statusline formatter for Claude Code CLI that displays model info, git branch, token usage, and other contextual metrics. The application is designed with extreme performance, ease of development, and maintainability as core priorities. It's written in Go as a compiled binary alternative to JavaScript-based statusline tools.
+
+## Installation
+
+The application includes an `install` command that automatically configures Claude Code to use cstatus as the statusline:
+
+```bash
+# Install the binary
+go install github.com/CS-5/cstatus@latest
+
+# Configure Claude Code to use cstatus
+cstatus install
+```
+
+The install command:
+- Creates `~/.claude/settings.json` if it doesn't exist
+- Adds the statusLine configuration to use cstatus
+- Preserves existing settings while updating the statusline configuration
+- Shows an error if a different statusline is already configured (to prevent conflicts)
+
+### Manual Installation
+
+If you prefer to configure manually, add this to `~/.claude/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "cstatus",
+    "padding": 0
+  }
+}
+```
 
 ## Development Commands
 
 ```bash
-# Run the application
-cat test.json | go run main.go
+# Install the application
+go install github.com/CS-5/cstatus@latest
+
+# Install as Claude Code statusline
+cstatus install
+
+# Run the application locally (for testing)
+echo '{"model":{"display_name":"Test"}}' | go run main.go
 
 # Build the application  
-go build main.go
+go build -o cstatus main.go
 
 # Run all tests
 go test ./... -v
 
 # Run tests with coverage
 go test ./... -cover
-
-# Build for production
-go build -o statusline main.go
 ```
 
 ## Architecture
@@ -31,10 +66,10 @@ The project follows a clean, layered architecture with explicit widget compositi
 
 ### Package Structure
 
-- **main.go**: CLI entry point - explicitly configures widgets and renders statusline using function-based approach
+- **main.go**: CLI entry point with installation support - explicitly configures widgets and renders statusline using function-based approach
+- **widgets.go**: Widget functions for project, git, model, session, context, and block timer display
 - **claude/**: Claude Code JSON parsing, context creation, and JSONL transcript processing
-- **ui/**: UI primitives (segments, ANSI rendering, powerline separators)  
-- **util/**: StatuslineBuilder for composing widget functions
+- **util/**: StatuslineBuilder for composing widget functions, UI segments, ANSI rendering, and powerline separators
 
 ### Core Flow
 
@@ -75,7 +110,7 @@ func parseTokenMetrics(transcriptPath string) (*ClaudeTokenMetrics, error)
 func GetSessionDuration(transcriptPath string) string
 ```
 
-**ui/ui.go**: UI primitives and rendering helpers
+**util/util.go**: UI primitives and rendering helpers
 ```go
 // Rendered output segment with powerline separators
 type Segment struct {
@@ -90,9 +125,13 @@ func NewSegment(icon, text, fgColor, bgColor string) *Segment
 
 // Powerline separator rendering
 func (s *Segment) Sep(next *Segment) string
+
+// Cost and token formatting utilities
+func FormatCost(cost float64) string
+func FormatTokens(cost float64) string
 ```
 
-**util/util.go**: Function-based widget composition
+**util/util.go**: Function-based widget composition and UI utilities
 ```go
 // StatuslineBuilder for composing widget functions
 type StatuslineBuilder struct {
@@ -116,7 +155,7 @@ func (b *StatuslineBuilder) Append(render func(claudeContext *claude.Context) *u
 
 The project uses a function-based widget approach for simplicity and compactness. Adding a widget is straightforward:
 
-1. **Create a widget function** in `main.go`:
+1. **Create a widget function** in `widgets.go`:
 
 ```go
 func myWidget(claudeContext *claude.Context) *ui.Segment {
@@ -126,7 +165,7 @@ func myWidget(claudeContext *claude.Context) *ui.Segment {
     }
     
     // Use helper for consistent formatting
-    return ui.NewSegment(myIcon, content, fgColor, bgColor)
+    return util.NewSegment(myIcon, content, fgColor, bgColor)
 }
 ```
 
@@ -144,13 +183,15 @@ const (
 3. **Add widget to main.go**:
 
 ```go
-lb := util.NewStatusLineBuilder(claudeContext).
+fmt.Println(util.NewStatusLineBuilder(claudeContext).
     Append(projectWidget).
     Append(myWidget). // Add your widget
-    Append(modelWidget)
-    // ... other widgets
-
-fmt.Print(lb.Render())
+    Append(gitStatusWidget).
+    Append(sessionWidget).
+    Append(contextWidget).
+    Append(blockTimerWidget).
+    Render(),
+)
 ```
 
 4. **Write tests** (if needed):
@@ -259,17 +300,28 @@ func (w *ContextWidget) Render(ctx *render.RenderContext) *ui.Segment {
 Widget configuration is explicit and happens at compile-time in `main.go`:
 
 ```go
-// Flexible widget ordering and selection
-statusline := builder.New().
-    AppendWidget(widgets.NewProject()).
-    AppendWidget(widgets.NewGit()).
-    // Skip model widget if not needed
-    AppendWidget(widgets.NewSession()).
-    AppendWidget(widgets.NewCustomWidget()). // Add custom widgets
-    Build(ctx)
+// Current widget configuration
+fmt.Println(util.NewStatusLineBuilder(claudeContext).
+    Append(projectWidget).
+    Append(gitStatusWidget).
+    Append(sessionWidget).
+    Append(contextWidget).
+    Append(blockTimerWidget).
+    Render(),
+)
 ```
 
-Colors and icons are defined in `ui/ui.go` constants.
+Colors and icons are defined directly in each widget function in `widgets.go`.
+
+### Available Widgets
+
+- `projectWidget`: Shows project name from workspace
+- `gitStatusWidget`: Shows current git branch  
+- `sessionWidget`: Shows cost and estimated token usage
+- `contextWidget`: Shows context length and percentage of window used
+- `blockTimerWidget`: Shows elapsed time since session start
+- `modelWidget`: Shows Claude model name (not currently used)
+- `versionWidget`: Shows Claude Code version (not currently used)
 
 Future: Runtime configuration could be added by reading from config files or environment variables.
 
