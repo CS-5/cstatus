@@ -20,14 +20,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	lb := util.NewStatusLineBuilder(claudeContext).
+	fmt.Println(util.NewStatusLineBuilder(claudeContext).
 		Append(projectWidget).
 		Append(gitStatusWidget).
 		Append(sessionWidget).
 		Append(contextWidget).
-		Append(blockTimerWidget)
-
-	fmt.Print(lb.Render())
+		Append(blockTimerWidget).
+		Render(),
+	)
 }
 
 func projectWidget(claudeContext *claude.Context) *util.Segment {
@@ -52,13 +52,13 @@ func gitStatusWidget(claudeContext *claude.Context) *util.Segment {
 	// Get the current branch name using git CLI with timeout
 	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
 	cmd.Dir = claudeContext.WorkingDir
-	
+
 	// Set a reasonable timeout for git commands
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	cmd = exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD")
 	cmd.Dir = claudeContext.WorkingDir
-	
+
 	output, err := cmd.Output()
 	if err != nil {
 		// Git command failed - repository might be corrupted or git not available
@@ -85,7 +85,7 @@ func sessionWidget(claudeContext *claude.Context) *util.Segment {
 	if claudeContext == nil || claudeContext.Code == nil {
 		return util.NewSegment("§", "$0.00 (0)", "#00ffff", "#202020")
 	}
-	
+
 	cost := claudeContext.Code.Cost.TotalCostUSD
 	costStr := util.FormatCost(cost)
 	tokensStr := util.FormatTokens(cost)
