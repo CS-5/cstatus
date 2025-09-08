@@ -469,3 +469,4 @@ The architecture supports easy extension:
 - **Performance first**: Always consider the impact of changes
 - **Package boundaries**: Keep UI, data, and business logic separate
 - **Error handling**: Provide clear, actionable error messages
+- Functions and struct fields should only be exported when external packages need their functionality

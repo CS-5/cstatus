@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -121,8 +123,11 @@ type ClaudeBlockMetrics struct {
 	LastActivity time.Time `json:"lastActivity"`
 }
 
+// SessionDuration represents the session duration in milliseconds (5 hours)
+const sessionDurationMs = int64(5 * 60 * 60 * 1000)
+
 func parseMetrics(transcriptPath string) (*ClaudeTokenMetrics, *ClaudeBlockMetrics, error) {
-	// This function is vibe coded - I take no responsibility
+	// Parses JSONL transcript file to extract token usage and session metrics
 
 	if transcriptPath == "" {
 		return nil, nil, nil
@@ -131,6 +136,9 @@ func parseMetrics(transcriptPath string) (*ClaudeTokenMetrics, *ClaudeBlockMetri
 	file, err := os.Open(transcriptPath)
 	if err != nil {
 		// Return nil metrics instead of failing - transcript may not exist yet
+		if !os.IsNotExist(err) {
+			log.Printf("Warning: failed to open transcript file %s: %v", transcriptPath, err)
+		}
 		return nil, nil, nil
 	}
 	defer file.Close()
@@ -138,7 +146,6 @@ func parseMetrics(transcriptPath string) (*ClaudeTokenMetrics, *ClaudeBlockMetri
 	var inputTokens, outputTokens, cachedTokens, contextLength int64
 	var mostRecentMainChainEntry *TranscriptEntry
 	var mostRecentTimestamp time.Time
-	var firstTimestamp time.Time
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -149,14 +156,9 @@ func parseMetrics(transcriptPath string) (*ClaudeTokenMetrics, *ClaudeBlockMetri
 
 		var entry TranscriptEntry
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			continue // Skip invalid JSON lines
-		}
-
-		// Parse timestamp for block metrics (first valid timestamp)
-		if entry.Timestamp != "" && firstTimestamp.IsZero() {
-			if t, err := time.Parse(time.RFC3339, entry.Timestamp); err == nil {
-				firstTimestamp = t
-			}
+			// Log parsing errors for debugging, but continue processing
+			log.Printf("Warning: failed to parse transcript line: %v", err)
+			continue
 		}
 
 		// Parse token usage data
@@ -167,18 +169,21 @@ func parseMetrics(transcriptPath string) (*ClaudeTokenMetrics, *ClaudeBlockMetri
 			cachedTokens += usage.CacheReadInputTokens + usage.CacheCreationInputTokens
 
 			// Track the most recent main chain entry for context length
+			// Main chain entries have isSidechain = false or undefined (defaults to main chain)
 			if !entry.IsSidechain && entry.Timestamp != "" {
 				if entryTime, err := time.Parse(time.RFC3339, entry.Timestamp); err == nil {
 					if mostRecentTimestamp.IsZero() || entryTime.After(mostRecentTimestamp) {
 						mostRecentTimestamp = entryTime
 						mostRecentMainChainEntry = &entry
 					}
+				} else {
+					log.Printf("Warning: failed to parse timestamp %s: %v", entry.Timestamp, err)
 				}
 			}
 		}
 	}
 
-	// Calculate context length from most recent main chain message
+	// Calculate context length from the most recent main chain message
 	if mostRecentMainChainEntry != nil && mostRecentMainChainEntry.Message != nil && mostRecentMainChainEntry.Message.Usage != nil {
 		usage := mostRecentMainChainEntry.Message.Usage
 		contextLength = usage.InputTokens + usage.CacheReadInputTokens + usage.CacheCreationInputTokens
@@ -194,95 +199,154 @@ func parseMetrics(transcriptPath string) (*ClaudeTokenMetrics, *ClaudeBlockMetri
 		ContextLength: contextLength,
 	}
 
-	var blockMetrics *ClaudeBlockMetrics
-	if !firstTimestamp.IsZero() {
-		blockMetrics = &ClaudeBlockMetrics{
-			StartTime:    firstTimestamp,
-			LastActivity: time.Now(),
-		}
+	// Parse block metrics from the same file to avoid duplicate I/O
+	blockMetrics, err := parseBlockMetricsFromFile(file)
+	if err != nil {
+		log.Printf("Warning: failed to parse block metrics: %v", err)
+		blockMetrics = nil
 	}
 
 	return tokenMetrics, blockMetrics, nil
 }
 
-// GetSessionDuration calculates session duration from transcript timestamps
-func GetSessionDuration(transcriptPath string) string {
+// parseBlockMetricsFromFile parses block metrics from an already open file
+func parseBlockMetricsFromFile(file *os.File) (*ClaudeBlockMetrics, error) {
+	// Reset file pointer to beginning
+	if _, err := file.Seek(0, 0); err != nil {
+		return nil, fmt.Errorf("failed to seek to start of file: %v", err)
+	}
+
+	timestamps, err := extractTimestamps(file)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(timestamps) == 0 {
+		return nil, nil
+	}
+
+	return calculateBlockMetrics(timestamps), nil
+}
+
+// extractTimestamps efficiently extracts and sorts timestamps from transcript
+func extractTimestamps(file *os.File) ([]time.Time, error) {
+	var timestamps []time.Time
+	scanner := bufio.NewScanner(file)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var entry TranscriptEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue // Skip invalid JSON lines
+		}
+
+		if entry.Timestamp != "" {
+			if t, err := time.Parse(time.RFC3339, entry.Timestamp); err == nil {
+				timestamps = append(timestamps, t)
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error scanning file: %v", err)
+	}
+
+	// Use efficient sort instead of bubble sort
+	sort.Slice(timestamps, func(i, j int) bool {
+		return timestamps[i].Before(timestamps[j])
+	})
+
+	return timestamps, nil
+}
+
+// calculateBlockMetrics computes block metrics from sorted timestamps
+func calculateBlockMetrics(timestamps []time.Time) *ClaudeBlockMetrics {
+	if len(timestamps) == 0 {
+		return nil
+	}
+
+	now := time.Now()
+	mostRecentTimestamp := timestamps[len(timestamps)-1]
+
+	// Check if the most recent activity is within the current session period
+	if now.Sub(mostRecentTimestamp).Milliseconds() > sessionDurationMs {
+		return nil // No recent activity
+	}
+
+	// Find the start of the current continuous work period
+	continuousWorkStart := findContinuousWorkStart(timestamps, sessionDurationMs)
+
+	// Floor to the hour
+	flooredWorkStart := floorToHour(continuousWorkStart)
+
+	// Calculate current block within the work period
+	blockStart := calculateBlockStart(now, flooredWorkStart, sessionDurationMs)
+
+	return &ClaudeBlockMetrics{
+		StartTime:    blockStart,
+		LastActivity: mostRecentTimestamp,
+	}
+}
+
+// findContinuousWorkStart finds the start of continuous work period
+func findContinuousWorkStart(timestamps []time.Time, sessionDurationMs int64) time.Time {
+	if len(timestamps) == 0 {
+		return time.Time{}
+	}
+
+	continuousWorkStart := timestamps[len(timestamps)-1]
+	for i := len(timestamps) - 2; i >= 0; i-- {
+		gap := timestamps[i+1].Sub(timestamps[i]).Milliseconds()
+		if gap >= sessionDurationMs {
+			break // Found a session boundary
+		}
+		continuousWorkStart = timestamps[i]
+	}
+	return continuousWorkStart
+}
+
+// floorToHour floors a timestamp to the hour boundary
+func floorToHour(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, t.Location())
+}
+
+// calculateBlockStart determines the start time of the current block
+func calculateBlockStart(now, flooredWorkStart time.Time, sessionDurationMs int64) time.Time {
+	totalWorkTime := now.Sub(flooredWorkStart).Milliseconds()
+	if totalWorkTime > sessionDurationMs {
+		completedBlocks := totalWorkTime / sessionDurationMs
+		blockStartMs := flooredWorkStart.UnixMilli() + (completedBlocks * sessionDurationMs)
+		return time.UnixMilli(blockStartMs)
+	}
+	return flooredWorkStart
+}
+
+// getBlockMetrics maintains backward compatibility by wrapping the new implementation
+func getBlockMetrics(transcriptPath string) *ClaudeBlockMetrics {
 	if transcriptPath == "" {
-		return ""
+		return nil
 	}
 
 	file, err := os.Open(transcriptPath)
 	if err != nil {
-		return ""
+		if !os.IsNotExist(err) {
+			log.Printf("Warning: failed to open transcript file %s: %v", transcriptPath, err)
+		}
+		return nil
 	}
 	defer file.Close()
 
-	var firstTimestamp, lastTimestamp time.Time
-	scanner := bufio.NewScanner(file)
-
-	// Find first valid timestamp
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-
-		var entry TranscriptEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			continue
-		}
-
-		if entry.Timestamp != "" {
-			if t, err := time.Parse(time.RFC3339, entry.Timestamp); err == nil {
-				firstTimestamp = t
-				break
-			}
-		}
+	blockMetrics, err := parseBlockMetricsFromFile(file)
+	if err != nil {
+		log.Printf("Warning: failed to parse block metrics from %s: %v", transcriptPath, err)
+		return nil
 	}
 
-	// Find last valid timestamp by reading the entire file
-	file.Seek(0, 0) // Reset file pointer
-	scanner = bufio.NewScanner(file)
-
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-
-		var entry TranscriptEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			continue
-		}
-
-		if entry.Timestamp != "" {
-			if t, err := time.Parse(time.RFC3339, entry.Timestamp); err == nil {
-				lastTimestamp = t
-			}
-		}
-	}
-
-	if firstTimestamp.IsZero() || lastTimestamp.IsZero() {
-		return ""
-	}
-
-	duration := lastTimestamp.Sub(firstTimestamp)
-	totalMinutes := int(duration.Minutes())
-
-	if totalMinutes < 1 {
-		return "<1m"
-	}
-
-	hours := totalMinutes / 60
-	minutes := totalMinutes % 60
-
-	if hours == 0 {
-		return formatDuration(0, minutes)
-	} else if minutes == 0 {
-		return formatDuration(hours, 0)
-	} else {
-		return formatDuration(hours, minutes)
-	}
+	return blockMetrics
 }
 
 func formatDuration(hours, minutes int) string {

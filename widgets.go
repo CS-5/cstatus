@@ -60,7 +60,7 @@ func modelWidget(claudeContext *claude.Context) *util.Segment {
 
 func sessionWidget(claudeContext *claude.Context) *util.Segment {
 	if claudeContext == nil || claudeContext.Code == nil {
-		return util.NewSegment("§", "$0.00 (0)", "#00ffff", "#202020")
+		return nil
 	}
 
 	cost := claudeContext.Code.Cost.TotalCostUSD
@@ -70,22 +70,19 @@ func sessionWidget(claudeContext *claude.Context) *util.Segment {
 	return util.NewSegment("§", fmt.Sprintf("%s (%s)", costStr, tokensStr), "#00ffff", "#202020")
 }
 
+
 func contextWidget(claudeContext *claude.Context) *util.Segment {
 	if claudeContext == nil || claudeContext.TokenMetrics == nil || claudeContext.TokenMetrics.ContextLength == 0 {
-		return util.NewSegment("🧠", "0 ctx", "#ff00ff", "#202020")
+		return nil
 	}
 
 	ctxStr := util.FormatTokens(float64(claudeContext.TokenMetrics.ContextLength))
 
-	// Default to 200k context window
+	// All current Claude models have 200k context window according to reference implementation
 	contextWindow := int64(200000)
-	if claudeContext.Code != nil && claudeContext.Code.Model.ID != "" && strings.Contains(strings.ToLower(claudeContext.Code.Model.ID), "haiku") {
-		contextWindow = 200000
-	}
-
 	percentage := float64(claudeContext.TokenMetrics.ContextLength) / float64(contextWindow) * 100
 
-	return util.NewSegment("🧠", fmt.Sprintf("%s (%.0f%%)", ctxStr, percentage), "#ff00ff", "#202020")
+	return util.NewSegment("🧠", fmt.Sprintf("%s (%.1f%%)", ctxStr, percentage), "#ff00ff", "#202020")
 }
 
 func versionWidget(claudeContext *claude.Context) *util.Segment {
@@ -96,8 +93,9 @@ func versionWidget(claudeContext *claude.Context) *util.Segment {
 }
 
 func blockTimerWidget(claudeContext *claude.Context) *util.Segment {
+	// Return nil when no active block - similar to reference implementation
 	if claudeContext == nil || claudeContext.BlockMetrics == nil || claudeContext.BlockMetrics.StartTime.IsZero() {
-		return util.NewSegment("⏱️", "0hr 0m", "#ffff00", "#333333")
+		return nil
 	}
 
 	elapsed := time.Since(claudeContext.BlockMetrics.StartTime)
@@ -105,7 +103,9 @@ func blockTimerWidget(claudeContext *claude.Context) *util.Segment {
 	minutes := int(elapsed.Minutes()) % 60
 
 	var timeStr string
-	if hours == 0 {
+	if hours == 0 && minutes == 0 {
+		timeStr = "0m"
+	} else if hours == 0 {
 		timeStr = fmt.Sprintf("%dm", minutes)
 	} else if minutes == 0 {
 		timeStr = fmt.Sprintf("%dhr", hours)
